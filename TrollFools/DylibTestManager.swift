@@ -5,6 +5,7 @@
 //  Created for Dylib Dynamic Testing inside Self-Process.
 //
 
+import CocoaLumberjackSwift
 import Foundation
 import MachOKit
 
@@ -49,18 +50,16 @@ final class DylibTestManager {
     // MARK: - Sign & Load Workflow
 
     /// ทดสอบ Sign, Bypass CoreTrust และโหลด dylib เข้า Process ตัวเองผ่าน dlopen
-    /// - Parameters:
-    ///   - dylibURL: ตำแหน่งของไฟล์ .dylib ที่ต้องการโหลด
-    ///   - forceSign: บังคับให้เซ็นใหม่และทำ ct_bypass เสมอหรือไม่
-    ///   - teamID: Team ID สำหรับการทำ ct_bypass (หากไม่ใส่จะดึงจาก Bundle หรือใช้ค่า Default)
-    /// - Returns: `UnsafeMutableRawPointer` pointer ของ handle ที่ได้จาก dlopen
     @discardableResult
     func prepareAndLoadDylib(
         at dylibURL: URL,
         forceSign: Bool = true,
         teamID: String? = nil
     ) throws -> UnsafeMutableRawPointer {
+        DDLogInfo("[DylibTestManager] 🚀 เริ่มกระบวนการเตรียมและโหลด dylib: \(dylibURL.lastPathComponent)")
+
         guard FileManager.default.fileExists(atPath: dylibURL.path) else {
+            DDLogError("[DylibTestManager] ❌ ไม่พบไฟล์ที่ Path: \(dylibURL.path)")
             throw DylibTestError.dylibNotFound(dylibURL.path)
         }
 
@@ -86,8 +85,14 @@ final class DylibTestManager {
 
         // หากเคยโหลดไว้แล้ว ให้คืนค่า handle เดิม
         if let existingHandle = loadedHandles[dylibURL] {
+            DDLogInfo("[DylibTestManager] ℹ️ พบ Handle เดิมอยู่ใน Memory แล้ว: \(path)")
             return existingHandle
         }
+
+        DDLogInfo("[DylibTestManager] ⏳ กำลังสั่ง dlopen(\(path), RTLD_NOW)...")
+
+        // เคลียร์ error buffer เก่าก่อน
+        dlerror()
 
         // เรียกใช้ dlopen (RTLD_NOW: resolve symbols ทั้งหมดทันที)
         guard let handle = dlopen(path, RTLD_NOW) else {
@@ -95,12 +100,12 @@ final class DylibTestManager {
             if let errorPointer = dlerror() {
                 errorMsg = String(cString: errorPointer)
             }
-            print("[DylibTestManager] ❌ dlopen Error Detail: \(errorMsg)")
+            DDLogError("[DylibTestManager] ❌ dlopen ล้มเหลว! ข้อความตอบกลับจาก dyld:\n\(errorMsg)")
             throw DylibTestError.loadFailed(errorMsg)
         }
 
         loadedHandles[dylibURL] = handle
-        print("[DylibTestManager] ✅ โหลด dylib สำเร็จ: \(dylibURL.lastPathComponent)")
+        DDLogInfo("[DylibTestManager] ✅ โหลด dylib สำเร็จ! Pointer: \(handle)")
         return handle
     }
 
@@ -110,15 +115,17 @@ final class DylibTestManager {
             throw DylibTestError.dylibNotLoaded
         }
 
+        DDLogInfo("[DylibTestManager] ⏳ กำลังปลด dylib ออกจาก Memory (dlclose)...")
         let result = dlclose(handle)
         if result == 0 {
             loadedHandles.removeValue(forKey: dylibURL)
-            print("[DylibTestManager] ✅ Unload dylib สำเร็จ: \(dylibURL.lastPathComponent)")
+            DDLogInfo("[DylibTestManager] ✅ Unload dylib สำเร็จ: \(dylibURL.lastPathComponent)")
         } else {
             var errorMsg = "Unknown error"
             if let errorPointer = dlerror() {
                 errorMsg = String(cString: errorPointer)
             }
+            DDLogError("[DylibTestManager] ❌ dlclose ล้มเหลว: \(errorMsg)")
             throw DylibTestError.unloadFailed(errorMsg)
         }
     }
@@ -161,42 +168,62 @@ final class DylibTestManager {
         }
 
         if hasCodeSign && !force {
+            DDLogInfo("[DylibTestManager] ℹ️ dylib มี Code Signature อยู่แล้ว ข้ามขั้นตอน ldid")
             return
         }
 
-        // สั่ง ldid -S [target] เพื่อลงนาม Ad-hoc ด้วย Root privilege
-        let retCode = try Execute.rootSpawn(
+        DDLogInfo("[DylibTestManager] ⚡️ Executing: ldid -S \(target.lastPathComponent)")
+
+        // สั่ง ldid -S [target] พร้อมรับ Stdout/Stderr บันทึกลง Log
+        let receipt = try Execute.rootSpawnWithOutputs(
             binary: ldidExecutableURL.path,
             arguments: ["-S", target.path]
         )
 
-        guard case let .exit(code) = retCode, code == EXIT_SUCCESS else {
-            throw DylibTestError.signingFailed("ldid exited with status \(retCode)")
+        let stdout = receipt.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        let stderr = receipt.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if !stdout.isEmpty { DDLogInfo("[ldid stdout] \(stdout)") }
+        if !stderr.isEmpty { DDLogError("[ldid stderr] \(stderr)") }
+
+        guard case let .exit(code) = receipt.terminationReason, code == EXIT_SUCCESS else {
+            DDLogError("[DylibTestManager] ❌ ldid ทำงานไม่สำเร็จ Exit Code: \(receipt.terminationReason)")
+            throw DylibTestError.signingFailed("Code \(receipt.terminationReason)")
         }
 
-        print("[DylibTestManager] ldid pseudo-sign สำเร็จ: \(target.lastPathComponent)")
+        DDLogInfo("[DylibTestManager] ✅ ldid pseudo-sign สำเร็จ: \(target.lastPathComponent)")
     }
 
     /// ใช้ ct_bypass เพื่อทำ CoreTrust Bypass ด้วย Root privilege
     private func applyCoreTrustBypass(_ target: URL, teamID: String) throws {
         let ctBypassURL = try findExecutable("ct_bypass")
 
-        // รันคำสั่ง: ct_bypass -r -i [target.path] -t [teamID]
-        let retCode = try Execute.rootSpawn(
+        DDLogInfo("[DylibTestManager] ⚡️ Executing: ct_bypass -r -i \(target.lastPathComponent) -t \(teamID)")
+
+        // รันคำสั่ง ct_bypass พร้อมรับ Stdout/Stderr บันทึกลง Log
+        let receipt = try Execute.rootSpawnWithOutputs(
             binary: ctBypassURL.path,
             arguments: ["-r", "-i", target.path, "-t", teamID]
         )
 
-        guard case let .exit(code) = retCode, code == EXIT_SUCCESS else {
-            throw DylibTestError.ctBypassFailed("ct_bypass exited with status \(retCode)")
+        let stdout = receipt.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        let stderr = receipt.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if !stdout.isEmpty { DDLogInfo("[ct_bypass stdout] \(stdout)") }
+        if !stderr.isEmpty { DDLogError("[ct_bypass stderr] \(stderr)") }
+
+        guard case let .exit(code) = receipt.terminationReason, code == EXIT_SUCCESS else {
+            DDLogError("[DylibTestManager] ❌ ct_bypass ทำงานไม่สำเร็จ Exit Code: \(receipt.terminationReason)")
+            throw DylibTestError.ctBypassFailed("Code \(receipt.terminationReason)")
         }
 
-        print("[DylibTestManager] ct_bypass สำเร็จสำหรับ TeamID (\(teamID)): \(target.lastPathComponent)")
+        DDLogInfo("[DylibTestManager] ✅ ct_bypass สำเร็จสำหรับ TeamID (\(teamID)): \(target.lastPathComponent)")
     }
 
     /// เปลี่ยน Owner ของไฟล์ dylib ให้เป็น mobile/installd (UID 33)
     private func changeOwnerToMobile(_ target: URL) throws {
         guard let chownURL = try? findExecutable("chown") else { return }
+        DDLogInfo("[DylibTestManager] ⚡️ Changing file owner to 33:33 (mobile)...")
         _ = try? Execute.rootSpawn(
             binary: chownURL.path,
             arguments: ["33:33", target.path]
@@ -225,6 +252,7 @@ final class DylibTestManager {
                 return execURL
             }
         }
+        DDLogError("[DylibTestManager] ❌ ไม่พบ Helper Binary: \(name)")
         throw DylibTestError.executableNotFound(name)
     }
 
