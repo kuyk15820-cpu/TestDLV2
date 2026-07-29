@@ -3,13 +3,24 @@
 //  TrollFools
 //
 
+import CocoaLumberjackSwift
 import SwiftUI
 import UniformTypeIdentifiers
 
 struct MainTestView: View {
     @StateObject private var viewModel = DylibTestViewModel()
     @State private var isImporterPresented = false
+    @State private var isLogsPresented = false // 🔥 ควบคุมการเปิดหน้า LogsView
     
+    // ดึง URL ของไฟล์ Log ล่าสุดจาก CocoaLumberjack
+    private var currentLogFileURL: URL? {
+        let fileLogger = DDLog.allLoggers.compactMap { $0 as? DDFileLogger }.first
+        if let logFilePath = fileLogger?.currentLogFileInfo?.filePath {
+            return URL(fileURLWithPath: logFilePath)
+        }
+        return nil
+    }
+
     private var allowedTypes: [UTType] {
         var types: [UTType] = [.bundle, .framework, .package, .zip, .data]
         if let dylibType = UTType(filenameExtension: "dylib") {
@@ -20,7 +31,7 @@ struct MainTestView: View {
         }
         return types
     }
-    
+
     var body: some View {
         NavigationView {
             VStack {
@@ -40,7 +51,7 @@ struct MainTestView: View {
                 .background(Color(UIColor.secondarySystemBackground))
                 .cornerRadius(10)
                 .padding(.horizontal)
-                
+
                 // ลิสต์แสดงรายการ Dylib ที่มีอยู่
                 List {
                     Section(header: Text("Dylibs / Frameworks ที่นำเข้าไว้")) {
@@ -51,21 +62,31 @@ struct MainTestView: View {
                         } else {
                             ForEach(viewModel.items) { item in
                                 HStack {
-                                    Image(systemName: item.type == .dylib ? "shippingbox.fill" : "cube.transparent.fill")
-                                        .foregroundColor(.accentColor)
-                                        .font(.title2)
-                                    
+                                    Image(
+                                        systemName: item.type == .dylib
+                                            ? "shippingbox.fill"
+                                            : "cube.transparent.fill"
+                                    )
+                                    .foregroundColor(.accentColor)
+                                    .font(.title2)
+
                                     VStack(alignment: .leading, spacing: 4) {
                                         Text(item.name)
                                             .font(.body)
                                             .fontWeight(.medium)
-                                        Text(item.isLoaded ? "Status: Loaded (dlopen)" : "Status: Not Loaded")
-                                            .font(.caption)
-                                            .foregroundColor(item.isLoaded ? .green : .gray)
+                                        Text(
+                                            item.isLoaded
+                                                ? "Status: Loaded (dlopen)"
+                                                : "Status: Not Loaded"
+                                        )
+                                        .font(.caption)
+                                        .foregroundColor(
+                                            item.isLoaded ? .green : .gray
+                                        )
                                     }
-                                    
+
                                     Spacer()
-                                    
+
                                     Button(action: {
                                         viewModel.toggleLoad(item: item)
                                     }) {
@@ -74,8 +95,14 @@ struct MainTestView: View {
                                             .fontWeight(.bold)
                                             .padding(.horizontal, 12)
                                             .padding(.vertical, 6)
-                                            .background(item.isLoaded ? Color.red.opacity(0.15) : Color.blue.opacity(0.15))
-                                            .foregroundColor(item.isLoaded ? .red : .blue)
+                                            .background(
+                                                item.isLoaded
+                                                    ? Color.red.opacity(0.15)
+                                                    : Color.blue.opacity(0.15)
+                                            )
+                                            .foregroundColor(
+                                                item.isLoaded ? .red : .blue
+                                            )
                                             .cornerRadius(8)
                                     }
                                     .buttonStyle(BorderlessButtonStyle())
@@ -89,6 +116,14 @@ struct MainTestView: View {
             }
             .navigationTitle("Test Dylib Loader")
             .toolbar {
+                // 🔥 เพิ่มปุ่มเปิดดู Log ทางมุมซ้ายบน
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button(action: { isLogsPresented = true }) {
+                        Image(systemName: "doc.text.magnifyingglass")
+                            .font(.title3)
+                    }
+                }
+
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button(action: { isImporterPresented = true }) {
                         Image(systemName: "plus.circle.fill")
@@ -110,7 +145,34 @@ struct MainTestView: View {
                     guard let selectedURL = urls.first else { return }
                     viewModel.importAndLoad(from: selectedURL)
                 case .failure(let error):
-                    viewModel.statusMessage = "เกิดข้อผิดพลาด: \(error.localizedDescription)"
+                    viewModel.statusMessage =
+                        "เกิดข้อผิดพลาด: \(error.localizedDescription)"
+                }
+            }
+            // 🔥 แสดง LogsView ผ่าน Sheet เมื่อกดปุ่ม Log
+            .sheet(isPresented: $isLogsPresented) {
+                if let logURL = currentLogFileURL {
+                    LogsView(url: logURL)
+                } else {
+                    NavigationView {
+                        VStack(spacing: 12) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .font(.system(size: 40))
+                                .foregroundColor(.orange)
+                            Text("ไม่พบไฟล์ Log ล่าสุด")
+                                .font(.headline)
+                            Text("ลองรันกระบวนการเพื่อสร้าง Log ขึ้นมาก่อน")
+                                .font(.subheadline)
+                                .foregroundColor(.gray)
+                        }
+                        .navigationTitle("Logs")
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar {
+                            ToolbarItem(placement: .navigationBarTrailing) {
+                                Button("ปิด") { isLogsPresented = false }
+                            }
+                        }
+                    }
                 }
             }
         }
