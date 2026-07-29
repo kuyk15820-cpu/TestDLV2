@@ -174,10 +174,13 @@ final class DylibTestManager {
 
         DDLogInfo("[DylibTestManager] ⚡️ Executing: ldid -S \(target.lastPathComponent)")
 
-        // สั่ง ldid -S [target] พร้อมรับ Stdout/Stderr บันทึกลง Log
-        let receipt = try Execute.rootSpawnWithOutputs(
-            binary: ldidExecutableURL.path,
-            arguments: ["-S", target.path]
+        // 🔥 กำหนด Root Persona (UID: 0, GID: 0) เพื่อยกระดับสิทธิ์ Root ในการเซ็นไฟล์
+        let rootPersona = AuxiliaryExecute.PersonaOptions(uid: 0, gid: 0)
+
+        let receipt = AuxiliaryExecute.spawn(
+            command: ldidExecutableURL.path,
+            args: ["-S", target.path],
+            personaOptions: rootPersona
         )
 
         let stdout = receipt.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -200,10 +203,13 @@ final class DylibTestManager {
 
         DDLogInfo("[DylibTestManager] ⚡️ Executing: ct_bypass -r -i \(target.lastPathComponent) -t \(teamID)")
 
-        // รันคำสั่ง ct_bypass พร้อมรับ Stdout/Stderr บันทึกลง Log
-        let receipt = try Execute.rootSpawnWithOutputs(
-            binary: ctBypassURL.path,
-            arguments: ["-r", "-i", target.path, "-t", teamID]
+        // 🔥 กำหนด Root Persona (UID: 0, GID: 0)
+        let rootPersona = AuxiliaryExecute.PersonaOptions(uid: 0, gid: 0)
+
+        let receipt = AuxiliaryExecute.spawn(
+            command: ctBypassURL.path,
+            args: ["-r", "-i", target.path, "-t", teamID],
+            personaOptions: rootPersona
         )
 
         let stdout = receipt.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -224,9 +230,12 @@ final class DylibTestManager {
     private func changeOwnerToMobile(_ target: URL) throws {
         guard let chownURL = try? findExecutable("chown") else { return }
         DDLogInfo("[DylibTestManager] ⚡️ Changing file owner to 33:33 (mobile)...")
-        _ = try? Execute.rootSpawn(
-            binary: chownURL.path,
-            arguments: ["33:33", target.path]
+
+        let rootPersona = AuxiliaryExecute.PersonaOptions(uid: 0, gid: 0)
+        _ = AuxiliaryExecute.spawn(
+            command: chownURL.path,
+            args: ["33:33", target.path],
+            personaOptions: rootPersona
         )
     }
 
