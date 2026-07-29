@@ -10,9 +10,8 @@ import UniformTypeIdentifiers
 struct MainTestView: View {
     @StateObject private var viewModel = DylibTestViewModel()
     @State private var isImporterPresented = false
-    @State private var isLogsPresented = false // 🔥 ควบคุมการเปิดหน้า LogsView
-    
-    // ดึง URL ของไฟล์ Log ล่าสุดจาก CocoaLumberjack
+    @State private var isLogsPresented = false
+
     private var currentLogFileURL: URL? {
         let fileLogger = DDLog.allLoggers.compactMap { $0 as? DDFileLogger }.first
         if let logFilePath = fileLogger?.currentLogFileInfo?.filePath {
@@ -52,7 +51,7 @@ struct MainTestView: View {
                 .cornerRadius(10)
                 .padding(.horizontal)
 
-                // ลิสต์แสดงรายการ Dylib ที่มีอยู่
+                // ลิสต์แสดงรายการ Dylib
                 List {
                     Section(header: Text("Dylibs / Frameworks ที่นำเข้าไว้")) {
                         if viewModel.items.isEmpty {
@@ -116,7 +115,6 @@ struct MainTestView: View {
             }
             .navigationTitle("Test Dylib Loader")
             .toolbar {
-                // 🔥 เพิ่มปุ่มเปิดดู Log ทางมุมซ้ายบน
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button(action: { isLogsPresented = true }) {
                         Image(systemName: "doc.text.magnifyingglass")
@@ -149,10 +147,9 @@ struct MainTestView: View {
                         "เกิดข้อผิดพลาด: \(error.localizedDescription)"
                 }
             }
-            // 🔥 แสดง LogsView ผ่าน Sheet เมื่อกดปุ่ม Log
             .sheet(isPresented: $isLogsPresented) {
                 if let logURL = currentLogFileURL {
-                    LogsView(url: logURL)
+                    InlineLogsView(url: logURL)
                 } else {
                     NavigationView {
                         VStack(spacing: 12) {
@@ -177,4 +174,42 @@ struct MainTestView: View {
             }
         }
     }
+}
+
+// MARK: - Local LogsView Wrapper (ป้องกัน Error Target Scope ใน CLI)
+
+struct InlineLogsView: UIViewControllerRepresentable {
+    let url: URL
+
+    func makeUIViewController(context: Context) -> UINavigationController {
+        let viewController = StripedTextTableViewController(path: url.path)
+
+        viewController.autoReload = false
+        viewController.maximumNumberOfRows = 1000
+        viewController.maximumNumberOfLines = 20
+        viewController.reversed = true
+        viewController.allowDismissal = true
+        viewController.allowTrash = false
+        viewController.allowSearch = true
+        viewController.allowShare = true
+        viewController.allowMultiline = true
+        viewController.pullToReload = false
+        viewController.tapToCopy = true
+        viewController.pressToCopy = true
+        viewController.preserveEmptyLines = false
+        viewController.removeDuplicates = true
+
+        if let regex = try? NSRegularExpression(
+            pattern: "^\\d{4}\\/\\d{2}\\/\\d{2} \\d{2}:\\d{2}:\\d{2}:\\d{3}  "
+        ) {
+            viewController.rowPrefixRegularExpression = regex
+        }
+
+        return UINavigationController(rootViewController: viewController)
+    }
+
+    func updateUIViewController(
+        _ uiViewController: UINavigationController,
+        context: Context
+    ) {}
 }
