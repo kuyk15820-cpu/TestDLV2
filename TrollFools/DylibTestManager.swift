@@ -63,18 +63,30 @@ final class DylibTestManager {
             throw DylibTestError.dylibNotFound(dylibURL.path)
         }
 
-        // 1. ทำการ Pseudo-Sign ไฟล์ dylib ด้วย ldid
-        try pseudoSignDylib(dylibURL, force: forceSign)
+        // 1. คัดลอก dylib เข้ามาใน Documents Directory ของแอปเพื่อหลีกเลี่ยงข้อจำกัด Sandbox / Cache path
+        let docsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let localDylibURL = docsURL.appendingPathComponent(dylibURL.lastPathComponent)
 
-        // 2. 🔥 ขั้นตอนสำคัญ: ทำ CoreTrust Bypass (ct_bypass) เพื่อให้ Kernel ยอมรับ dlopen
+        if FileManager.default.fileExists(atPath: localDylibURL.path) {
+            try? FileManager.default.removeItem(at: localDylibURL)
+        }
+        try FileManager.default.copyItem(at: dylibURL, to: localDylibURL)
+
+        // 2. ปรับ Permissions ไฟล์เป็น 755
+        chmod(localDylibURL.path, 0o755)
+
+        // 3. ทำการ Pseudo-Sign ไฟล์ dylib ด้วย ldid บน path ปลายทาง
+        try pseudoSignDylib(localDylibURL, force: forceSign)
+
+        // 4. 🔥 ขั้นตอนสำคัญ: ทำ CoreTrust Bypass (ct_bypass) เพื่อให้ Kernel ยอมรับ dlopen
         let targetTeamID = teamID ?? getAppTeamID()
-        try applyCoreTrustBypass(dylibURL, teamID: targetTeamID)
+        try applyCoreTrustBypass(localDylibURL, teamID: targetTeamID)
 
-        // 3. ปรับสิทธิ์ Owner ของไฟล์ (chown 33:33 / mobile:mobile) ป้องกัน permission denied
-        try? changeOwnerToMobile(dylibURL)
+        // 5. ปรับสิทธิ์ Owner ของไฟล์ (chown 33:33 / mobile:mobile) ป้องกัน permission denied
+        try? changeOwnerToMobile(localDylibURL)
 
-        // 4. เรียก dlopen เพื่อ Map dylib เข้า Memory ของแอป
-        return try loadDylib(at: dylibURL)
+        // 6. เรียก dlopen เพื่อ Map dylib เข้า Memory ของแอป
+        return try loadDylib(at: localDylibURL)
     }
 
     // MARK: - Core dlopen & dlclose
@@ -89,13 +101,13 @@ final class DylibTestManager {
             return existingHandle
         }
 
-        DDLogInfo("[DylibTestManager] ⏳ กำลังสั่ง dlopen(\(path), RTLD_NOW)...")
+        DDLogInfo("[DylibTestManager] ⏳ กำลังสั่ง dlopen(\(path), RTLD_NOW | RTLD_GLOBAL)...")
 
         // เคลียร์ error buffer เก่าก่อน
         dlerror()
 
-        // เรียกใช้ dlopen (RTLD_NOW: resolve symbols ทั้งหมดทันที)
-        guard let handle = dlopen(path, RTLD_NOW) else {
+        // เรียกใช้ dlopen โดยเปิด RTLD_GLOBAL ร่วมด้วย เพื่อให้ Symbol ทำงานร่วมกันได้สมบูรณ์
+        guard let handle = dlopen(path, RTLD_NOW | RTLD_GLOBAL) else {
             var errorMsg = "Unknown error"
             if let errorPointer = dlerror() {
                 errorMsg = String(cString: errorPointer)
@@ -174,7 +186,6 @@ final class DylibTestManager {
 
         DDLogInfo("[DylibTestManager] ⚡️ Executing: ldid -S \(target.lastPathComponent)")
 
-        // 🔥 กำหนด Root Persona (UID: 0, GID: 0) เพื่อยกระดับสิทธิ์ Root ในการเซ็นไฟล์
         let rootPersona = AuxiliaryExecute.PersonaOptions(uid: 0, gid: 0)
 
         let receipt = AuxiliaryExecute.spawn(
@@ -203,7 +214,6 @@ final class DylibTestManager {
 
         DDLogInfo("[DylibTestManager] ⚡️ Executing: ct_bypass -r -i \(target.lastPathComponent) -t \(teamID)")
 
-        // 🔥 กำหนด Root Persona (UID: 0, GID: 0)
         let rootPersona = AuxiliaryExecute.PersonaOptions(uid: 0, gid: 0)
 
         let receipt = AuxiliaryExecute.spawn(
