@@ -11,6 +11,12 @@ final class DylibTestViewModel: ObservableObject {
     @Published var statusMessage: String = "พร้อมทดสอบ"
     @Published var isLoading: Bool = false
     
+    /// ดึง Working URL ของไฟล์ที่ถูกคัดลอกไปไว้ใน tmp
+    private func getWorkingURL(for fileURL: URL) -> URL {
+        let tmpDirectory = FileManager.default.temporaryDirectory
+        return tmpDirectory.appendingPathComponent(fileURL.lastPathComponent)
+    }
+
     /// โหลดลิสต์ไฟล์ทั้งหมดที่มีอยู่ใน Directory ออกมาแสดง
     func refreshList() {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -36,15 +42,17 @@ final class DylibTestViewModel: ObservableObject {
                 let ext = fileURL.pathExtension.lowercased()
                 
                 if ext == "dylib" {
-                    let isLoaded = DylibTestManager.shared.isLoaded(dylibURL: fileURL)
+                    let workingURL = self.getWorkingURL(for: fileURL)
+                    let isLoaded = DylibTestManager.shared.isLoaded(dylibURL: workingURL)
                     newItems.append(DylibItem(name: fileURL.lastPathComponent, url: fileURL, type: .dylib, isLoaded: isLoaded))
                     
                 } else if ext == "framework" {
                     let fwkName = fileURL.deletingPathExtension().lastPathComponent
                     let binaryURL = fileURL.appendingPathComponent(fwkName)
                     
+                    let workingURL = self.getWorkingURL(for: binaryURL)
                     // เช็คสถานะการโหลดผ่านตัว Binary URL
-                    let isLoaded = DylibTestManager.shared.isLoaded(dylibURL: binaryURL)
+                    let isLoaded = DylibTestManager.shared.isLoaded(dylibURL: workingURL)
                     
                     // เก็บ URL สำหรับ Execute (binaryURL)
                     newItems.append(DylibItem(name: fileURL.lastPathComponent, url: binaryURL, type: .framework, isLoaded: isLoaded))
@@ -104,8 +112,10 @@ final class DylibTestViewModel: ObservableObject {
             guard let self = self else { return }
             do {
                 let message: String
+                let workingURL = self.getWorkingURL(for: item.url)
+                
                 if item.isLoaded {
-                    try DylibTestManager.shared.unloadDylib(at: item.url)
+                    try DylibTestManager.shared.unloadDylib(at: workingURL)
                     message = "Unload \(item.name) แล้ว"
                 } else {
                     // โหลดผ่าน Manager (ซึ่งรองรับทั้ง ct_bypass + dlopen แล้ว)
