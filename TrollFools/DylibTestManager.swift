@@ -63,18 +63,28 @@ final class DylibTestManager {
             throw DylibTestError.dylibNotFound(dylibURL.path)
         }
 
+        // 0. 🔥 คัดลอกไฟล์ไปยังโฟลเดอร์ tmp ของตัวแอป
+        let tmpDirectory = FileManager.default.temporaryDirectory
+        let workingDylibURL = tmpDirectory.appendingPathComponent(dylibURL.lastPathComponent)
+
+        if FileManager.default.fileExists(atPath: workingDylibURL.path) {
+            try? FileManager.default.removeItem(at: workingDylibURL)
+        }
+        try FileManager.default.copyItem(at: dylibURL, to: workingDylibURL)
+        chmod(workingDylibURL.path, 0o777)
+
         // 1. ทำการ Pseudo-Sign ไฟล์ dylib ด้วย ldid
-        try pseudoSignDylib(dylibURL, force: forceSign)
+        try pseudoSignDylib(workingDylibURL, force: forceSign)
 
         // 2. 🔥 ขั้นตอนสำคัญ: ทำ CoreTrust Bypass (ct_bypass) เพื่อให้ Kernel ยอมรับ dlopen
         let targetTeamID = teamID ?? getAppTeamID()
-        try applyCoreTrustBypass(dylibURL, teamID: targetTeamID)
+        try applyCoreTrustBypass(workingDylibURL, teamID: targetTeamID)
 
         // 3. ปรับสิทธิ์ Owner ของไฟล์ (chown 33:33 / mobile:mobile) ป้องกัน permission denied
-        try? changeOwnerToMobile(dylibURL)
+        try? changeOwnerToMobile(workingDylibURL)
 
         // 4. เรียก dlopen เพื่อ Map dylib เข้า Memory ของแอป
-        return try loadDylib(at: dylibURL)
+        return try loadDylib(at: workingDylibURL)
     }
 
     // MARK: - Core dlopen & dlclose
